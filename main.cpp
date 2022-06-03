@@ -348,56 +348,56 @@ void NeuralNetwork::backpropagate(
 
   auto const adjust_weights =
     [this, &front, &back, step](const Vector &expected)
-  {
     {
-      const Vector &actual = this->output();
-      size_t const last_layer = layers_count - 1;
-
-      front.rows = neuron_counts[last_layer];
-      front.cols = neuron_counts[last_layer - 1];
-
-      for (size_t row = 0; row < weights[last_layer - 1].rows; row++)
       {
-        double const delta =
-          (actual[row] - expected[row]) * dsigmoid(actual[row]);
+        const Vector &actual = this->output();
+        size_t const last_layer = layers_count - 1;
 
-        for (size_t col = 0; col < weights[last_layer - 1].cols; col++)
+        front.rows = neuron_counts[last_layer];
+        front.cols = neuron_counts[last_layer - 1];
+
+        for (size_t row = 0; row < weights[last_layer - 1].rows; row++)
         {
-          double &weight = weights[last_layer - 1](row, col);
+          double const delta =
+            (actual[row] - expected[row]) * dsigmoid(actual[row]);
 
-          front(row, col) = weight * delta;
-          weight -= step * delta * actvs[last_layer - 1][col];
-        }
-      }
-    }
+          for (size_t col = 0; col < weights[last_layer - 1].cols; col++)
+          {
+            double &weight = weights[last_layer - 1](row, col);
 
-    std::swap(front, back);
-
-    for (size_t layer = layers_count - 1; layer-- > 1; )
-    {
-      front.rows = neuron_counts[layer];
-      front.cols = neuron_counts[layer - 1];
-
-      for (size_t row = 0; row < weights[layer - 1].rows; row++)
-      {
-        double delta = 0;
-        for (size_t k = 0; k < neuron_counts[layer + 1]; k++)
-          delta += back(k, row);
-
-        delta *= dsigmoid(actvs[layer][row]);
-
-        for (size_t col = 0; col < weights[layer - 1].cols; col++)
-        {
-          double &weight = weights[layer - 1](row, col);
-
-          front(row, col) = weight * delta;
-          weight -= step * delta * actvs[layer - 1][col];
+            front(row, col) = weight * delta;
+            weight -= step * delta * actvs[last_layer - 1][col];
+          }
         }
       }
 
       std::swap(front, back);
-    }
-  };
+
+      for (size_t layer = layers_count - 1; layer-- > 1; )
+      {
+        front.rows = neuron_counts[layer];
+        front.cols = neuron_counts[layer - 1];
+
+        for (size_t row = 0; row < weights[layer - 1].rows; row++)
+        {
+          double delta = 0;
+          for (size_t k = 0; k < neuron_counts[layer + 1]; k++)
+            delta += back(k, row);
+
+          delta *= dsigmoid(actvs[layer][row]);
+
+          for (size_t col = 0; col < weights[layer - 1].cols; col++)
+          {
+            double &weight = weights[layer - 1](row, col);
+
+            front(row, col) = weight * delta;
+            weight -= step * delta * actvs[layer - 1][col];
+          }
+        }
+
+        std::swap(front, back);
+      }
+    };
 
   double error;
   do
