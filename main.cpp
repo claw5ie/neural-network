@@ -239,6 +239,11 @@ double rand_range(double min, double max)
   return (double)std::rand() / RAND_MAX * (max - min) + min;
 }
 
+const Vector &NeuralNetwork::input() const
+{
+  return actvs[0];
+}
+
 NeuralNetwork NeuralNetwork::create(const size_t *neuron_counts, size_t layers)
 {
   if (layers <= 1)
@@ -341,6 +346,9 @@ void NeuralNetwork::backpropagate(
   const Dataset &dataset, double step, double eps
   )
 {
+  assert(this->input().count == dataset.inputs &&
+         this->output().count == dataset.outputs);
+
   char *const data = new char[2 * max_matrix_size];
 
   Mat front = { (double *)data, 0, 0 };
