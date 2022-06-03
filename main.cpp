@@ -145,8 +145,7 @@ struct NeuralNetwork
   Vector *actvs;
   size_t *neuron_counts;
   size_t layers_count;
-  Mat front;
-  Mat back;
+  size_t max_matrix_size;
   MemoryPool pool;
 
   static NeuralNetwork create(const size_t *neuron_counts, size_t layers);
@@ -157,10 +156,9 @@ struct NeuralNetwork
     const Vector *input,
     const Vector *output,
     size_t count,
+    double step,
     double eps
     );
-
-  void adjust_weights(const Vector &expected, double eps);
 
   const Vector &input() const;
 
@@ -197,13 +195,11 @@ NeuralNetwork NeuralNetwork::create(const size_t *neuron_counts, size_t layers)
   }
 
   NeuralNetwork net;
-  size_t const sizes[6] = {
+  size_t const sizes[4] = {
     (layers - 1) * sizeof (Mat),
     layers * sizeof (Vector),
     layers * sizeof (size_t),
-    max_network_size,
-    max_delta_matrix_size,
-    max_delta_matrix_size
+    max_network_size
   };
 
   size_t const total_size = sum(sizes, sizeof (sizes) / sizeof (*sizes));
@@ -213,6 +209,7 @@ NeuralNetwork NeuralNetwork::create(const size_t *neuron_counts, size_t layers)
   net.actvs = (Vector *)net.pool.reserve(sizes[1]);
   net.neuron_counts = (size_t *)net.pool.reserve(sizes[2]);
   net.layers_count = layers;
+  net.max_matrix_size = max_delta_matrix_size;
 
   for (double *i = (double *)(net.pool.data + net.pool.size),
          *const end = i + max_network_size / sizeof (double);
@@ -245,12 +242,9 @@ NeuralNetwork NeuralNetwork::create(const size_t *neuron_counts, size_t layers)
       );
   }
 
-  net.front.data = (double *)net.pool.reserve(max_delta_matrix_size);
-  net.back.data = (double *)net.pool.reserve(max_delta_matrix_size);
+  std::memcpy(net.neuron_counts, neuron_counts, layers * sizeof (size_t));
 
   assert(net.pool.size == net.pool.reserved);
-
-  std::memcpy(net.neuron_counts, neuron_counts, layers * sizeof (size_t));
 
   return net;
 }
@@ -274,38 +268,72 @@ const Vector &NeuralNetwork::output() const
   return actvs[layers_count - 1];
 }
 
-double derivative(
-  NeuralNetwork &net,
-  const Vector *input,
-  const Vector *output,
-  size_t layer,
-  size_t row,
-  size_t col
-  )
-{
-  const double h = 0.00001;
-  double &weight = net.weights[layer](row, col);
-  weight -= h;
-  net.feedforward(*input);
-  double const cost_before = cost(net.output(), *output);
-  /* double const cost_before = net->activations[2].data[1]; */
-  weight += 2 * h;
-  net.feedforward(*input);
-  double const cost_after = cost(net.output(), *output);
-  /* double const cost_after = net->activations[2].data[1]; */
-  weight -= h;
-  net.feedforward(*input);
-
-  return (cost_after - cost_before) / (2 * h);
-}
-
 void NeuralNetwork::backpropagate(
   const Vector *input,
   const Vector *output,
   size_t count,
+  double step,
   double eps
   )
 {
+  char *const data = new char[2 * max_matrix_size];
+
+  Mat front = { (double *)data, 0, 0 };
+  Mat back = { (double *)(data + max_matrix_size), 0, 0 };
+
+  auto const adjust_weights =
+    [this, &front, &back, step](const Vector &expected)
+  {
+    {
+      const Vector &actual = this->output();
+      size_t const last_layer = layers_count - 1;
+
+      front.rows = neuron_counts[last_layer];
+      front.cols = neuron_counts[last_layer - 1];
+
+      for (size_t row = 0; row < weights[last_layer - 1].rows; row++)
+      {
+        double const delta =
+          (actual[row] - expected[row]) * dsigmoid(actual[row]);
+
+        for (size_t col = 0; col < weights[last_layer - 1].cols; col++)
+        {
+          double &weight = weights[last_layer - 1](row, col);
+
+          front(row, col) = weight * delta;
+          weight -= step * delta * actvs[last_layer - 1][col];
+        }
+      }
+    }
+
+    std::swap(front, back);
+
+    for (size_t layer = layers_count - 1; layer-- > 1; )
+    {
+      front.rows = neuron_counts[layer];
+      front.cols = neuron_counts[layer - 1];
+
+      for (size_t row = 0; row < weights[layer - 1].rows; row++)
+      {
+        double delta = 0;
+        for (size_t k = 0; k < neuron_counts[layer + 1]; k++)
+          delta += back(k, row);
+
+        delta *= dsigmoid(actvs[layer][row]);
+
+        for (size_t col = 0; col < weights[layer - 1].cols; col++)
+        {
+          double &weight = weights[layer - 1](row, col);
+
+          front(row, col) = weight * delta;
+          weight -= step * delta * actvs[layer - 1][col];
+        }
+      }
+
+      std::swap(front, back);
+    }
+  };
+
   double error;
   do
   {
@@ -314,68 +342,13 @@ void NeuralNetwork::backpropagate(
     {
       feedforward(input[i]);
       error += cost(this->output(), output[i]);
-      adjust_weights(output[i], eps);
+      adjust_weights(output[i]);
     }
 
     error /= count;
   } while (error > eps);
-}
 
-void NeuralNetwork::adjust_weights(const Vector &expected, double eps)
-{
-  {
-    const Vector &actual = this->output();
-    size_t const last_layer = layers_count - 1;
-
-    front.rows = neuron_counts[last_layer];
-    front.cols = neuron_counts[last_layer - 1];
-
-    for (size_t row = 0; row < weights[last_layer - 1].rows; row++)
-    {
-      double const delta =
-        (actual[row] - expected[row]) * dsigmoid(actual[row]);
-
-      for (size_t col = 0; col < weights[last_layer - 1].cols; col++)
-      {
-        double &weight = weights[last_layer - 1](row, col);
-
-        front(row, col) = weight * delta;
-        weight -= eps * delta * actvs[last_layer - 1][col];
-        // std::cout << delta * actvs[last_layer - 1][col] -
-        //   derivative(*this, &input(), &expected, last_layer - 1, row, col)
-        //           << '\n';
-      }
-    }
-  }
-
-  std::swap(front, back);
-
-  for (size_t layer = layers_count - 1; layer-- > 1; )
-  {
-    front.rows = neuron_counts[layer];
-    front.cols = neuron_counts[layer - 1];
-
-    for (size_t row = 0; row < weights[layer - 1].rows; row++)
-    {
-      double delta = 0;
-      for (size_t k = 0; k < neuron_counts[layer + 1]; k++)
-        delta += back(k, row);
-
-      delta *= dsigmoid(actvs[layer][row]);
-
-      for (size_t col = 0; col < weights[layer - 1].cols; col++)
-      {
-        double &weight = weights[layer - 1](row, col);
-
-        front(row, col) = weight * delta;
-        weight -= eps * delta * actvs[layer - 1][col];
-        // std::cout << delta * actvs[layer - 1][col] -
-        //   derivative(*this, &input(), expected, layer - 1, row, col) << '\n';
-      }
-    }
-
-    std::swap(front, back);
-  }
+  delete[] data;
 }
 
 int main()
@@ -390,11 +363,13 @@ int main()
   Vector input = { in, 3 };
   Vector target = { tar, 2 };
 
-  net.backpropagate(&input, &target, 1, 0.0005);
+  net.backpropagate(&input, &target, 1, 0.05, 0.00001);
 
   net.feedforward(input);
   const Vector &output = net.output();
 
   for (size_t i = 0; i < output.count; i++)
     std::cout << output[i] << (i + 1 < output.count ? ' ' : '\n');
+
+  delete[] net.pool.data;
 }
