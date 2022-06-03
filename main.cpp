@@ -167,7 +167,7 @@ struct NeuralNetwork
 
 double rand_range(double min, double max)
 {
-  return (double)rand() / RAND_MAX * (max - min) + min;
+  return (double)std::rand() / RAND_MAX * (max - min) + min;
 }
 
 NeuralNetwork NeuralNetwork::create(const size_t *neuron_counts, size_t layers)
@@ -354,6 +354,7 @@ void NeuralNetwork::backpropagate(
 int main()
 {
   srand(10234);
+  std::srand(10234);
 
   size_t const counts[4] = { 3, 4, 3, 2 };
   NeuralNetwork net = NeuralNetwork::create(counts, 4);
