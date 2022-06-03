@@ -1,4 +1,5 @@
 #include <iostream>
+#include <fstream>
 #include <cstring>
 #include <cmath>
 #include <cassert>
@@ -139,6 +140,78 @@ void *MemoryPool::reserve(size_t bytes)
   return begin;
 }
 
+struct Dataset
+{
+  double *data;
+  size_t samples,
+    inputs,
+    outputs;
+
+  static Dataset read(const char *filepath);
+
+  Vector input(size_t row) const;
+
+  Vector output(size_t row) const;
+};
+
+Vector Dataset::input(size_t row) const
+{
+  assert(row < samples);
+
+  return { data + row * (inputs + outputs), inputs };
+}
+
+Vector Dataset::output(size_t row) const
+{
+  assert(row < samples);
+
+  return { data + row * (inputs + outputs) + inputs, outputs };
+}
+
+Dataset Dataset::read(const char *filepath)
+{
+  std::fstream file(filepath, std::fstream::in);
+
+  if (!file.is_open())
+  {
+    std::cerr << "ERROR: failed to open the file `"
+              << filepath
+              << "`.\n";
+    std::exit(EXIT_FAILURE);
+  }
+
+  Dataset dataset;
+
+  file >> dataset.samples
+       >> dataset.inputs
+       >> dataset.outputs;
+
+  size_t const doubles_to_read =
+    dataset.samples * (dataset.inputs + dataset.outputs);
+
+  dataset.data = new double[doubles_to_read];
+
+  size_t count = 0;
+  while (!file.eof() && count < doubles_to_read)
+  {
+    file >> dataset.data[count];
+    count++;
+  }
+
+  if (count < doubles_to_read)
+  {
+    std::cerr << "ERROR: read less values than indicated in the header of "
+      "the file. Missing "
+              << doubles_to_read - count
+              << " values.\n";
+    std::exit(EXIT_FAILURE);
+  }
+
+  file.close();
+
+  return dataset;
+}
+
 struct NeuralNetwork
 {
   Mat *weights;
@@ -153,11 +226,7 @@ struct NeuralNetwork
   void feedforward(const Vector &input);
 
   void backpropagate(
-    const Vector *input,
-    const Vector *output,
-    size_t count,
-    double step,
-    double eps
+    const Dataset &samples, double step, double eps
     );
 
   const Vector &input() const;
@@ -269,11 +338,7 @@ const Vector &NeuralNetwork::output() const
 }
 
 void NeuralNetwork::backpropagate(
-  const Vector *input,
-  const Vector *output,
-  size_t count,
-  double step,
-  double eps
+  const Dataset &dataset, double step, double eps
   )
 {
   char *const data = new char[2 * max_matrix_size];
@@ -338,39 +403,48 @@ void NeuralNetwork::backpropagate(
   do
   {
     error = 0;
-    for (size_t i = 0; i < count; i++)
+    for (size_t i = 0; i < dataset.samples; i++)
     {
-      feedforward(input[i]);
-      error += cost(this->output(), output[i]);
-      adjust_weights(output[i]);
+      feedforward(dataset.input(i));
+      error += cost(this->output(), dataset.output(i));
+      adjust_weights(dataset.output(i));
     }
 
-    error /= count;
+    error /= dataset.samples;
   } while (error > eps);
 
   delete[] data;
 }
 
-int main()
+int main(int argc, char **argv)
 {
-  srand(10234);
+  assert(argc >= 3);
+
   std::srand(10234);
 
-  size_t const counts[4] = { 3, 4, 3, 2 };
+  Dataset dataset = Dataset::read(argv[1]);
+
+  size_t const counts[4] = { dataset.inputs, 4, 3, dataset.outputs };
   NeuralNetwork net = NeuralNetwork::create(counts, 4);
 
-  double in[] = { 1, 0, 1 };
-  double tar[] = { 0.4, 0.8 };
-  Vector input = { in, 3 };
-  Vector target = { tar, 2 };
+  net.backpropagate(dataset, 0.05, 0.00001);
 
-  net.backpropagate(&input, &target, 1, 0.05, 0.00001);
+  delete[] dataset.data;
 
-  net.feedforward(input);
-  const Vector &output = net.output();
+  dataset = Dataset::read(argv[2]);
 
-  for (size_t i = 0; i < output.count; i++)
-    std::cout << output[i] << (i + 1 < output.count ? ' ' : '\n');
+  {
+    double average_cost = 0;
 
+    for (size_t i = 0; i < dataset.samples; i++)
+    {
+      net.feedforward(dataset.input(i));
+      average_cost += cost(net.output(), dataset.output(i));
+    }
+
+    std::cout << "average cost: " << average_cost / dataset.samples << '\n';
+  }
+
+  delete[] dataset.data;
   delete[] net.pool.data;
 }
