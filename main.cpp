@@ -223,9 +223,9 @@ struct NeuralNetwork
 
   static NeuralNetwork create(const size_t *neuron_counts, size_t layers);
 
-  void feedforward(const Vector &input);
+  void feed(const Vector &input);
 
-  void backpropagate(
+  void train(
     const Dataset &samples, double step, double eps
     );
 
@@ -323,7 +323,7 @@ NeuralNetwork NeuralNetwork::create(const size_t *neuron_counts, size_t layers)
   return net;
 }
 
-void NeuralNetwork::feedforward(const Vector &input)
+void NeuralNetwork::feed(const Vector &input)
 {
   assert(neuron_counts[0] == input.count);
 
@@ -342,7 +342,7 @@ const Vector &NeuralNetwork::output() const
   return actvs[layers_count - 1];
 }
 
-void NeuralNetwork::backpropagate(
+void NeuralNetwork::train(
   const Dataset &dataset, double step, double eps
   )
 {
@@ -413,7 +413,7 @@ void NeuralNetwork::backpropagate(
     error = 0;
     for (size_t i = 0; i < dataset.samples; i++)
     {
-      feedforward(dataset.input(i));
+      feed(dataset.input(i));
       error += cost(this->output(), dataset.output(i));
       adjust_weights(dataset.output(i));
     }
@@ -435,7 +435,7 @@ int main(int argc, char **argv)
   size_t const counts[4] = { dataset.inputs, 4, 3, dataset.outputs };
   NeuralNetwork net = NeuralNetwork::create(counts, 4);
 
-  net.backpropagate(dataset, 0.05, 0.00001);
+  net.train(dataset, 0.05, 0.00001);
 
   delete[] dataset.data;
 
@@ -446,7 +446,7 @@ int main(int argc, char **argv)
 
     for (size_t i = 0; i < dataset.samples; i++)
     {
-      net.feedforward(dataset.input(i));
+      net.feed(dataset.input(i));
       average_cost += cost(net.output(), dataset.output(i));
     }
 
