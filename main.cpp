@@ -1,21 +1,69 @@
-#include <iostream>
-#include <fstream>
-#include <cstring>
+#include <algorithm>
+#include <cstdio>
+#include <cstdlib>
 #include <cmath>
+#include <cstring>
+#include <cstdarg>
+#include <cstdint>
 #include <cassert>
 
-size_t sum(const size_t *values, size_t count)
+template<class Type>
+Type *malloc_or_exit(size_t count)
 {
-  size_t sum = 0;
-  while (count-- > 0)
-    sum += values[count];
+  Type *const data = (Type *)std::malloc(count * sizeof (Type));
 
-  return sum;
+  if (data == NULL)
+  {
+    std::fprintf(stderr,
+                 "ERROR: failed to allocate %zu elements of "
+                   "size %zu.\n",
+                 count,
+                 sizeof (Type));
+    std::exit(EXIT_FAILURE);
+  }
+
+  return data;
+}
+
+struct Chunks
+{
+  char *data;
+  char **offsets;
+  size_t count;
+};
+
+Chunks allocate_aligned_chunks(size_t count, ...)
+{
+  auto const snap =
+    [](size_t size) -> size_t
+    {
+      size += sizeof (void *) - 1;
+
+      return size - size % sizeof (void *);
+    };
+
+  char **const offsets = malloc_or_exit<char *>(count + 1);
+
+  va_list args;
+  va_start(args, count);
+
+  offsets[0] = (char *)0;
+  for (size_t i = 1; i <= count; i++)
+    offsets[i] = offsets[i - 1] + snap(va_arg(args, size_t));
+
+  va_end(args);
+
+  char *const data = malloc_or_exit<char>((uintptr_t)offsets[count]);
+
+  for (size_t i = 0; i <= count; i++)
+    offsets[i] = data + (uintptr_t)offsets[i];
+
+  return { data, offsets, count + 1 };
 }
 
 double sigmoid(double x)
 {
-  return 1.0 / (exp(-x) + 1);
+  return 1.0 / (std::exp(-x) + 1);
 }
 
 double dsigmoid(double y)
@@ -26,50 +74,28 @@ double dsigmoid(double y)
 struct Mat
 {
   double *data;
-  size_t rows,
-    cols;
-
-  double &operator()(size_t row, size_t column);
-
-  double operator()(size_t row, size_t column) const;
+  size_t rows;
+  size_t cols;
 };
 
-double &Mat::operator()(size_t row, size_t column)
+double &get(const Mat &matrix, size_t row, size_t column)
 {
-  assert(row < rows && column < cols);
+  assert(row < matrix.rows && column < matrix.cols);
 
-  return data[row * cols + column];
-}
-
-double Mat::operator()(size_t row, size_t column) const
-{
-  assert(row < rows && column < cols);
-
-  return data[row * cols + column];
+  return matrix.data[row * matrix.cols + column];
 }
 
 struct Vector
 {
   double *data;
   size_t count;
-
-  double &operator[](size_t index);
-
-  double operator[](size_t index) const;
 };
 
-double &Vector::operator[](size_t index)
+double &get(const Vector &vector, size_t index)
 {
-  assert(index < count);
+  assert(index < vector.count);
 
-  return data[index];
-}
-
-double Vector::operator[](size_t index) const
-{
-  assert(index < count);
-
-  return data[index];
+  return vector.data[index];
 }
 
 double cost(const Vector &actual, const Vector &expected)
@@ -80,134 +106,101 @@ double cost(const Vector &actual, const Vector &expected)
 
   for (size_t i = 0; i < actual.count; i++)
   {
-    double const diff = actual[i] - expected[i];
+    double const diff = get(actual, i) - get(expected, i);
     cost_value += diff * diff;
   }
 
   return cost_value / actual.count;
 }
 
-void multiply_in_place(
-  Vector &dest, const Mat &matrix, const Vector &vector
+void compute_activations(
+  const Vector &dest,
+  const Mat &matrix,
+  const Vector &vector,
+  double (*activation)(double)
   )
 {
   assert(matrix.cols == vector.count && dest.count == matrix.rows);
 
   for (size_t i = 0; i < matrix.rows; i++)
   {
-    dest[i] = 0;
+    get(dest, i) = 0;
+
     for (size_t j = 0; j < matrix.cols; j++)
-      dest[i] += matrix(i, j) * vector[j];
+      get(dest, i) += get(matrix, i, j) * get(vector, j);
+
+    get(dest, i) = activation(get(dest, i));
   }
-}
-
-void map(double (*func)(double), Vector &dest)
-{
-  for (size_t i = 0; i < dest.count; i++)
-    dest[i] = func(dest[i]);
-}
-
-struct MemoryPool
-{
-  char *data;
-  size_t size;
-  size_t reserved;
-
-  static MemoryPool allocate(size_t bytes);
-
-  void *reserve(size_t bytes);
-};
-
-MemoryPool MemoryPool::allocate(size_t bytes)
-{
-  return { new char[bytes], 0, bytes };
-}
-
-void *MemoryPool::reserve(size_t bytes)
-{
-  if (size + bytes > reserved)
-  {
-    std::cerr << "ERROR: failed to reserve "
-              << bytes
-              << " bytes: out of reserved memory.\n";
-    std::exit(EXIT_FAILURE);
-  }
-
-  void *const begin = (void *)(data + size);
-
-  size += bytes;
-
-  return begin;
 }
 
 struct Dataset
 {
   double *data;
-  size_t samples,
-    inputs,
-    outputs;
-
-  static Dataset read(const char *filepath);
-
-  Vector input(size_t row) const;
-
-  Vector output(size_t row) const;
+  size_t samples;
+  size_t inputs;
+  size_t outputs;
 };
 
-Vector Dataset::input(size_t row) const
+Vector input(const Dataset &dataset, size_t row)
 {
-  assert(row < samples);
+  assert(row < dataset.samples);
 
-  return { data + row * (inputs + outputs), inputs };
+  return { dataset.data + row * (dataset.inputs + dataset.outputs),
+           dataset.inputs };
 }
 
-Vector Dataset::output(size_t row) const
+Vector output(const Dataset &dataset, size_t row)
 {
-  assert(row < samples);
+  assert(row < dataset.samples);
 
-  return { data + row * (inputs + outputs) + inputs, outputs };
+  return { dataset.data +
+             row * (dataset.inputs + dataset.outputs) +
+             dataset.inputs,
+           dataset.outputs };
 }
 
-Dataset Dataset::read(const char *filepath)
+Dataset read_dataset(const char *filepath)
 {
-  std::fstream file(filepath, std::fstream::in);
+  FILE *const file = std::fopen(filepath, "r");
 
-  if (!file.is_open())
+  if (file == NULL)
   {
-    std::cerr << "ERROR: failed to open the file `"
-              << filepath
-              << "`.\n";
+    std::fprintf(stderr,
+                 "ERROR: failed to open file %s.\n",
+                 filepath);
     std::exit(EXIT_FAILURE);
   }
 
   Dataset dataset;
 
-  file >> dataset.samples
-       >> dataset.inputs
-       >> dataset.outputs;
+  if (std::fscanf(file,
+                  "%zu %zu %zu",
+                  &dataset.samples,
+                  &dataset.inputs,
+                  &dataset.outputs) < 3)
+  {
+    std::fputs("ERROR: failed to read header of the file.\n",
+               stderr);
+    std::exit(EXIT_FAILURE);
+  }
 
   size_t const doubles_to_read =
     dataset.samples * (dataset.inputs + dataset.outputs);
 
-  dataset.data = new double[doubles_to_read];
+  dataset.data = malloc_or_exit<double>(doubles_to_read);
 
-  size_t count = 0;
-  while (!file.eof() && count < doubles_to_read)
+  for (size_t i = 0; i < doubles_to_read; i++)
   {
-    file >> dataset.data[count];
-    count++;
+    if (std::fscanf(file, "%lf", &dataset.data[i]) < 1)
+    {
+      std::fprintf(stderr,
+                   "ERROR: failed to read %zu values.\n",
+                   doubles_to_read - i);
+      std::exit(EXIT_FAILURE);
+    }
   }
 
-  if (count < doubles_to_read)
-  {
-    std::cerr << "ERROR: read less values than indicated in the header of "
-      "the file. Missing "
-              << doubles_to_read - count
-              << " values.\n";
-    std::exit(EXIT_FAILURE);
-  }
-
-  file.close();
+  std::fclose(file);
 
   return dataset;
 }
@@ -218,85 +211,71 @@ struct NeuralNetwork
   Vector *actvs;
   size_t *neuron_counts;
   size_t layers_count;
-  size_t max_matrix_size;
-  MemoryPool pool;
-
-  static NeuralNetwork create(const size_t *neuron_counts, size_t layers);
-
-  void feed(const Vector &input);
-
-  void train(
-    const Dataset &samples, double step, double eps
-    );
-
-  const Vector &input() const;
-
-  const Vector &output() const;
+  char *raw_data;
 };
 
-double rand_range(double min, double max)
+double rand(double min, double max)
 {
   return (double)std::rand() / RAND_MAX * (max - min) + min;
 }
 
-const Vector &NeuralNetwork::input() const
+const Vector &input(const NeuralNetwork &net)
 {
-  return actvs[0];
+  return net.actvs[0];
 }
 
-NeuralNetwork NeuralNetwork::create(const size_t *neuron_counts, size_t layers)
+NeuralNetwork create_neural_network(
+  const size_t *neuron_counts,
+  size_t layers
+  )
 {
   if (layers <= 1)
   {
-    std::cerr << "ERROR: number of layers should be more than 1.\n";
+    std::fputs("ERROR: number of layers should be more than 1.\n",
+               stderr);
     std::exit(EXIT_FAILURE);
   }
 
   assert(neuron_counts[0] > 0);
 
-  size_t max_network_size = neuron_counts[0] * sizeof (double);
-  size_t max_delta_matrix_size = 0;
+  size_t network_size = neuron_counts[0] * sizeof (double);
 
   for (size_t i = 1; i < layers; i++)
   {
     assert(neuron_counts[i] > 0);
 
-    size_t const matrix_size =
-      neuron_counts[i - 1] * neuron_counts[i] * sizeof (double);
-
-    max_network_size += matrix_size + neuron_counts[i] * sizeof (double);
-    max_delta_matrix_size = std::max(max_delta_matrix_size, matrix_size);
+    network_size += (neuron_counts[i - 1] * neuron_counts[i] + neuron_counts[i]) * sizeof (double);
   }
 
   NeuralNetwork net;
-  size_t const sizes[4] = {
+
+  Chunks const chunks = allocate_aligned_chunks(
+    4,
     (layers - 1) * sizeof (Mat),
     layers * sizeof (Vector),
     layers * sizeof (size_t),
-    max_network_size
-  };
+    network_size
+    );
 
-  size_t const total_size = sum(sizes, sizeof (sizes) / sizeof (*sizes));
-
-  net.pool = MemoryPool::allocate(total_size);
-  net.weights = (Mat *)net.pool.reserve(sizes[0]);
-  net.actvs = (Vector *)net.pool.reserve(sizes[1]);
-  net.neuron_counts = (size_t *)net.pool.reserve(sizes[2]);
+  net.weights = (Mat *)chunks.offsets[0];
+  net.actvs = (Vector *)chunks.offsets[1];
+  net.neuron_counts = (size_t *)chunks.offsets[2];
   net.layers_count = layers;
-  net.max_matrix_size = max_delta_matrix_size;
+  net.raw_data = chunks.offsets[0];
 
-  for (double *i = (double *)(net.pool.data + net.pool.size),
-         *const end = i + max_network_size / sizeof (double);
-       i < end;
+  for (double *i = (double *)chunks.offsets[3];
+       i < (double *)chunks.offsets[4];
        i++)
   {
-    *i = rand_range(-1, 1);
+    *i = rand(-1, 1);
   }
 
+  double *next = (double *)chunks.offsets[3];
+
   net.actvs[0].count = neuron_counts[0];
-  net.actvs[0].data = (double *)net.pool.reserve(
-    net.actvs[0].count * sizeof (double)
-    );
+  net.actvs[0].data = next;
+
+  next += net.actvs[0].count;
 
   for (size_t i = 1; i < layers; i++)
   {
@@ -304,102 +283,128 @@ NeuralNetwork NeuralNetwork::create(const size_t *neuron_counts, size_t layers)
 
     weights.rows = neuron_counts[i];
     weights.cols = neuron_counts[i - 1];
-    weights.data = (double *)net.pool.reserve(
-      weights.rows * weights.cols * sizeof (double)
-      );
+    weights.data = next;
+
+    next += weights.rows * weights.cols;
 
     auto &actv = net.actvs[i];
 
     actv.count = neuron_counts[i];
-    actv.data = (double *)net.pool.reserve(
-      actv.count * sizeof (double)
-      );
+    actv.data = next;
+
+    next += actv.count;
   }
 
-  std::memcpy(net.neuron_counts, neuron_counts, layers * sizeof (size_t));
+  std::memcpy(net.neuron_counts,
+              neuron_counts,
+              layers * sizeof (size_t));
 
-  assert(net.pool.size == net.pool.reserved);
+  assert(next == (double *)chunks.offsets[4]);
+
+  std::free(chunks.offsets);
 
   return net;
 }
 
-void NeuralNetwork::feed(const Vector &input)
+void feed(const NeuralNetwork &net, const Vector &input)
 {
-  assert(neuron_counts[0] == input.count);
+  assert(net.neuron_counts[0] == input.count);
 
-  std::memcpy(actvs[0].data, input.data, input.count * sizeof (double));
+  std::memcpy(net.actvs[0].data,
+              input.data,
+              input.count * sizeof (double));
 
-  for (size_t i = 1; i < layers_count; i++)
+  for (size_t i = 1; i < net.layers_count; i++)
   {
-    // Maybe should apply all of those operations at once.
-    multiply_in_place(actvs[i], weights[i - 1], actvs[i - 1]);
-    map(sigmoid, actvs[i]);
+    compute_activations(
+      net.actvs[i], net.weights[i - 1], net.actvs[i - 1], sigmoid
+      );
   }
 }
 
-const Vector &NeuralNetwork::output() const
+const Vector &output(const NeuralNetwork &net)
 {
-  return actvs[layers_count - 1];
+  return net.actvs[net.layers_count - 1];
 }
 
-void NeuralNetwork::train(
-  const Dataset &dataset, double step, double eps
+void train(
+  const NeuralNetwork &net,
+  const Dataset &dataset,
+  double step,
+  double eps
   )
 {
-  assert(this->input().count == dataset.inputs &&
-         this->output().count == dataset.outputs);
+  assert(input(net).count == dataset.inputs &&
+         output(net).count == dataset.outputs);
 
-  char *const data = new char[2 * max_matrix_size];
+  size_t max_matrix_count = 0;
 
-  Mat front = { (double *)data, 0, 0 };
-  Mat back = { (double *)(data + max_matrix_size), 0, 0 };
+  for (size_t i = 0; i < net.layers_count - 1; i++)
+  {
+    max_matrix_count = std::max(
+      max_matrix_count, net.weights[i].rows * net.weights[i].cols
+      );
+  }
+
+  double *const buffer =
+    malloc_or_exit<double>(2 * max_matrix_count);
+
+  Mat front = { buffer, 0, 0 };
+  Mat back = { buffer + max_matrix_count, 0, 0 };
 
   auto const adjust_weights =
-    [this, &front, &back, step](const Vector &expected)
+    [&net, &front, &back, step](const Vector &expected)
     {
       {
-        const Vector &actual = this->output();
-        size_t const last_layer = layers_count - 1;
+        const Vector &actual = output(net);
+        size_t const last_layer = net.layers_count - 1;
 
-        front.rows = neuron_counts[last_layer];
-        front.cols = neuron_counts[last_layer - 1];
+        front.rows = net.neuron_counts[last_layer];
+        front.cols = net.neuron_counts[last_layer - 1];
 
-        for (size_t row = 0; row < weights[last_layer - 1].rows; row++)
+        for (size_t row = 0;
+             row < net.weights[last_layer - 1].rows;
+             row++)
         {
-          double const delta =
-            (actual[row] - expected[row]) * dsigmoid(actual[row]);
+          double const delta = (get(actual, row) - get(expected, row)) * dsigmoid(get(actual, row));
 
-          for (size_t col = 0; col < weights[last_layer - 1].cols; col++)
+          for (size_t col = 0;
+               col < net.weights[last_layer - 1].cols;
+               col++)
           {
-            double &weight = weights[last_layer - 1](row, col);
+            double &weight = get(net.weights[last_layer - 1], row, col);
 
-            front(row, col) = weight * delta;
-            weight -= step * delta * actvs[last_layer - 1][col];
+            get(front, row, col) = weight * delta;
+            weight -= step * delta * get(net.actvs[last_layer - 1], col);
           }
         }
       }
 
       std::swap(front, back);
 
-      for (size_t layer = layers_count - 1; layer-- > 1; )
+      for (size_t layer = net.layers_count - 1; layer-- > 1; )
       {
-        front.rows = neuron_counts[layer];
-        front.cols = neuron_counts[layer - 1];
+        front.rows = net.neuron_counts[layer];
+        front.cols = net.neuron_counts[layer - 1];
 
-        for (size_t row = 0; row < weights[layer - 1].rows; row++)
+        for (size_t row = 0;
+             row < net.weights[layer - 1].rows;
+             row++)
         {
           double delta = 0;
-          for (size_t k = 0; k < neuron_counts[layer + 1]; k++)
-            delta += back(k, row);
+          for (size_t k = 0; k < net.neuron_counts[layer + 1]; k++)
+            delta += get(back, k, row);
 
-          delta *= dsigmoid(actvs[layer][row]);
+          delta *= dsigmoid(get(net.actvs[layer], row));
 
-          for (size_t col = 0; col < weights[layer - 1].cols; col++)
+          for (size_t col = 0;
+               col < net.weights[layer - 1].cols;
+               col++)
           {
-            double &weight = weights[layer - 1](row, col);
+            double &weight = get(net.weights[layer - 1], row, col);
 
-            front(row, col) = weight * delta;
-            weight -= step * delta * actvs[layer - 1][col];
+            get(front, row, col) = weight * delta;
+            weight -= step * delta * get(net.actvs[layer - 1], col);
           }
         }
 
@@ -408,20 +413,21 @@ void NeuralNetwork::train(
     };
 
   double error;
+
   do
   {
     error = 0;
     for (size_t i = 0; i < dataset.samples; i++)
     {
-      feed(dataset.input(i));
-      error += cost(this->output(), dataset.output(i));
-      adjust_weights(dataset.output(i));
+      feed(net, input(dataset, i));
+      error += cost(output(net), output(dataset, i));
+      adjust_weights(output(dataset, i));
     }
 
     error /= dataset.samples;
   } while (error > eps);
 
-  delete[] data;
+  std::free(buffer);
 }
 
 int main(int argc, char **argv)
@@ -430,29 +436,30 @@ int main(int argc, char **argv)
 
   std::srand(10234);
 
-  Dataset dataset = Dataset::read(argv[1]);
+  Dataset dataset = read_dataset(argv[1]);
 
   size_t const counts[4] = { dataset.inputs, 4, 3, dataset.outputs };
-  NeuralNetwork net = NeuralNetwork::create(counts, 4);
+  NeuralNetwork net = create_neural_network(counts, 4);
 
-  net.train(dataset, 0.05, 0.00001);
+  train(net, dataset, 0.05, 0.00001);
 
-  delete[] dataset.data;
+  std::free(dataset.data);
 
-  dataset = Dataset::read(argv[2]);
+  dataset = read_dataset(argv[2]);
 
   {
     double average_cost = 0;
 
     for (size_t i = 0; i < dataset.samples; i++)
     {
-      net.feed(dataset.input(i));
-      average_cost += cost(net.output(), dataset.output(i));
+      feed(net, input(dataset, i));
+      average_cost += cost(output(net), output(dataset, i));
     }
 
-    std::cout << "average cost: " << average_cost / dataset.samples << '\n';
+    std::printf("avarage cost: %lg.\n",
+                average_cost / dataset.samples);
   }
 
-  delete[] dataset.data;
-  delete[] net.pool.data;
+  std::free(dataset.data);
+  std::free(net.raw_data);
 }
