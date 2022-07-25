@@ -177,7 +177,7 @@ Dataset read_dataset(const char *filepath)
                   "%zu %zu %zu",
                   &dataset.samples,
                   &dataset.inputs,
-                  &dataset.outputs) < 3)
+                  &dataset.outputs) != 3)
   {
     std::fputs("ERROR: failed to read header of the file.\n",
                stderr);
@@ -191,7 +191,7 @@ Dataset read_dataset(const char *filepath)
 
   for (size_t i = 0; i < doubles_to_read; i++)
   {
-    if (std::fscanf(file, "%lf", &dataset.data[i]) < 1)
+    if (std::fscanf(file, "%lf", &dataset.data[i]) != 1)
     {
       std::fprintf(stderr,
                    "ERROR: failed to read %zu values.\n",
